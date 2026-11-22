@@ -1,18 +1,26 @@
 import os
 import re
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from pypdf import PdfReader
+from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .auth_routes import router as auth_router
 from .database import Base, engine, get_db
 from .models import Course, Resource
+from .rate_limits import limiter
 from .schemas import CourseCreate, CourseOut, ResourceOut, ResourceUpdate
+from .security import jwt_secret, require_admin
 from .seed import seed_database
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -23,10 +31,78 @@ upload_dir.mkdir(parents=True,exist_ok=True)
 app=FastAPI(title='LearnHub API',version='1.0.0')
 origins=[origin.strip() for origin in os.getenv('FRONTEND_ORIGINS','http://localhost:5173,http://127.0.0.1:5173').split(',') if origin.strip()]
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
+app.state.limiter=limiter
+app.add_exception_handler(RateLimitExceeded,_rate_limit_exceeded_handler)
+app.include_router(auth_router)
+
+MAX_PDF_BYTES=20*1024*1024
+MAX_UPLOAD_REQUEST_BYTES=MAX_PDF_BYTES+1024*1024
+
+
+@app.middleware("http")
+async def guard_upload_request_size(request:Request,call_next):
+    is_upload=(request.method=="POST" and request.url.path=="/api/resources") or (request.method=="PUT" and request.url.path.startswith("/api/resources/") and request.url.path.endswith("/file"))
+    if is_upload:
+        length=request.headers.get("content-length")
+        if length is None:
+            return JSONResponse(status_code=411,content={"detail":"Upload requests must include a Content-Length header."})
+        try:
+            request_size=int(length)
+        except ValueError:
+            return JSONResponse(status_code=400,content={"detail":"Invalid Content-Length header."})
+        if request_size>MAX_UPLOAD_REQUEST_BYTES:
+            return JSONResponse(status_code=413,content={"detail":"Upload request exceeds the 20 MiB file limit."})
+    return await call_next(request)
+
+
+MAX_PDF_PAGES=500
+DANGEROUS_PDF_KEYS={'/JavaScript','/JS','/OpenAction','/AA','/Launch','/EmbeddedFiles','/RichMedia','/SubmitForm','/ImportData','/GoToR'}
+
+
+def inspect_pdf(filename:str,content_type:str,contents:bytes)->int:
+    if Path(filename).suffix.lower()!='.pdf':
+        raise HTTPException(status_code=415,detail='Only PDF files can be uploaded.')
+    if content_type not in {'application/pdf','application/octet-stream'}:
+        raise HTTPException(status_code=415,detail='The uploaded file must have PDF content.')
+    if not contents.startswith(b'%PDF-'):
+        raise HTTPException(status_code=415,detail='The uploaded file is not a valid PDF.')
+    try:
+        reader=PdfReader(BytesIO(contents),strict=True)
+        if reader.is_encrypted:
+            raise HTTPException(status_code=415,detail='Encrypted PDFs are not accepted.')
+        page_count=len(reader.pages)
+        if page_count<1 or page_count>MAX_PDF_PAGES:
+            raise HTTPException(status_code=413,detail=f'PDFs must contain between 1 and {MAX_PDF_PAGES} pages.')
+        visited=set()
+        node_count=0
+        def inspect_object(value):
+            nonlocal node_count
+            node_count+=1
+            if node_count>100000:
+                raise ValueError('PDF object graph is too large.')
+            if isinstance(value,IndirectObject):
+                identity=(value.idnum,value.generation)
+                if identity in visited:return
+                visited.add(identity)
+                value=value.get_object()
+            if isinstance(value,DictionaryObject):
+                for key,child in value.items():
+                    if str(key) in DANGEROUS_PDF_KEYS:
+                        raise HTTPException(status_code=415,detail='PDFs with scripts, launch actions, or embedded files are not accepted.')
+                    inspect_object(child)
+            elif isinstance(value,ArrayObject):
+                for child in value:inspect_object(child)
+        inspect_object(reader.trailer)
+        return page_count
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=415,detail='The PDF structure could not be safely inspected.')
 
 
 @app.on_event('startup')
 def initialize_database():
+    jwt_secret()
     Base.metadata.create_all(bind=engine)
     with Session(engine) as db:seed_database(db)
 
@@ -47,7 +123,7 @@ def list_courses(db:Session=Depends(get_db)):
 
 
 @app.post('/api/courses',response_model=CourseOut,status_code=201)
-def create_course(payload:CourseCreate,db:Session=Depends(get_db)):
+def create_course(payload:CourseCreate,admin=Depends(require_admin),db:Session=Depends(get_db)):
     values=payload.model_dump()
     values['id']=values['id'] or f"course-{uuid4().hex[:12]}"
     values['code']=values['code'].strip().upper()
@@ -62,7 +138,7 @@ def create_course(payload:CourseCreate,db:Session=Depends(get_db)):
 
 
 @app.delete('/api/courses/{course_id}',status_code=204)
-def delete_course(course_id:str,db:Session=Depends(get_db)):
+def delete_course(course_id:str,admin=Depends(require_admin),db:Session=Depends(get_db)):
     course=db.get(Course,course_id)
     if course is None:raise HTTPException(status_code=404,detail='Course not found.')
     for resource in db.scalars(select(Resource).where(Resource.course==course.name)).all():
@@ -81,29 +157,31 @@ def list_resources(db:Session=Depends(get_db)):
 
 
 @app.post('/api/resources',response_model=ResourceOut,status_code=201)
+@limiter.limit('10/hour')
 async def upload_resource(
-    title:str=Form(...),course:str=Form(...),code:str=Form(...),resource_type:str=Form(...,alias='type'),
-    paper_year:str=Form(''),file:UploadFile=File(...),db:Session=Depends(get_db)
+    request:Request,response:Response,title:str=Form(...),course:str=Form(...),code:str=Form(...),resource_type:str=Form(...,alias='type'),
+    paper_year:str=Form(''),file:UploadFile=File(...),admin=Depends(require_admin),db:Session=Depends(get_db)
 ):
     filename=Path(file.filename or 'resource.pdf').name
-    if not filename.lower().endswith('.pdf') and file.content_type!='application/pdf':
-        raise HTTPException(status_code=415,detail='Only PDF files can be uploaded.')
-    contents=await file.read(20*1024*1024+1)
-    if len(contents)>20*1024*1024:raise HTTPException(status_code=413,detail='PDF must be 20 MB or smaller.')
-    if not contents.startswith(b'%PDF'):raise HTTPException(status_code=415,detail='The uploaded file is not a valid PDF.')
+    contents=await file.read(MAX_PDF_BYTES+1)
+    if len(contents)>MAX_PDF_BYTES:raise HTTPException(status_code=413,detail='PDF must be 20 MB or smaller.')
+    from starlette.concurrency import run_in_threadpool
+    pages=await run_in_threadpool(inspect_pdf,filename,file.content_type or '',contents)
     safe_name=re.sub(r'[^a-zA-Z0-9._-]+','-',filename)
     resource_id=f"res-{uuid4().hex}"
     path=upload_dir/f'{resource_id}-{safe_name}'
     path.write_bytes(contents)
-    item=Resource(id=resource_id,title=title.strip(),course=course.strip(),code=code.strip().upper(),type=resource_type,paper_year=paper_year or '',pages=1,date='Just added',size=f'{len(contents)/1024/1024:.2f} MB',file_name=filename,file_path=str(path),uploaded=True)
+    item=Resource(id=resource_id,title=title.strip(),course=course.strip(),code=code.strip().upper(),type=resource_type,paper_year=paper_year or '',pages=pages,date='Just added',size=f'{len(contents)/1024/1024:.2f} MB',file_name=filename,file_path=str(path),uploaded=True)
     db.add(item)
-    db.commit()
+    try:db.commit()
+    except Exception:
+        db.rollback();path.unlink(missing_ok=True);raise
     db.refresh(item)
     return resource_json(item)
 
 
 @app.patch('/api/resources/{resource_id}',response_model=ResourceOut)
-def update_resource(resource_id:str,payload:ResourceUpdate,db:Session=Depends(get_db)):
+def update_resource(resource_id:str,payload:ResourceUpdate,admin=Depends(require_admin),db:Session=Depends(get_db)):
     item=db.get(Resource,resource_id)
     if item is None:raise HTTPException(status_code=404,detail='Resource not found.')
     for key,value in payload.model_dump(exclude_unset=True).items():
@@ -114,20 +192,23 @@ def update_resource(resource_id:str,payload:ResourceUpdate,db:Session=Depends(ge
 
 
 @app.put('/api/resources/{resource_id}/file',response_model=ResourceOut)
-async def replace_resource_file(resource_id:str,file:UploadFile=File(...),db:Session=Depends(get_db)):
+@limiter.limit('10/hour')
+async def replace_resource_file(request:Request,response:Response,resource_id:str,file:UploadFile=File(...),admin=Depends(require_admin),db:Session=Depends(get_db)):
     item=db.get(Resource,resource_id)
     if item is None:raise HTTPException(status_code=404,detail='Resource not found.')
     filename=Path(file.filename or 'resource.pdf').name
-    if not filename.lower().endswith('.pdf') and file.content_type!='application/pdf':raise HTTPException(status_code=415,detail='Only PDF files can be uploaded.')
-    contents=await file.read(20*1024*1024+1)
-    if len(contents)>20*1024*1024:raise HTTPException(status_code=413,detail='PDF must be 20 MB or smaller.')
-    if not contents.startswith(b'%PDF'):raise HTTPException(status_code=415,detail='The uploaded file is not a valid PDF.')
+    contents=await file.read(MAX_PDF_BYTES+1)
+    if len(contents)>MAX_PDF_BYTES:raise HTTPException(status_code=413,detail='PDF must be 20 MB or smaller.')
+    from starlette.concurrency import run_in_threadpool
+    pages=await run_in_threadpool(inspect_pdf,filename,file.content_type or '',contents)
     safe_name=re.sub(r'[^a-zA-Z0-9._-]+','-',filename)
     path=upload_dir/f'{resource_id}-{uuid4().hex[:8]}-{safe_name}'
     path.write_bytes(contents)
     old_path=Path(item.file_path) if item.file_path else None
-    item.file_path=str(path);item.file_name=filename;item.size=f'{len(contents)/1024/1024:.2f} MB';item.uploaded=True
-    db.commit();db.refresh(item)
+    item.file_path=str(path);item.file_name=filename;item.size=f'{len(contents)/1024/1024:.2f} MB';item.pages=pages;item.uploaded=True
+    try:db.commit();db.refresh(item)
+    except Exception:
+        db.rollback();path.unlink(missing_ok=True);raise
     if old_path:
         try:old_path.unlink(missing_ok=True)
         except OSError:pass
@@ -135,7 +216,7 @@ async def replace_resource_file(resource_id:str,file:UploadFile=File(...),db:Ses
 
 
 @app.delete('/api/resources/{resource_id}',status_code=204)
-def delete_resource(resource_id:str,db:Session=Depends(get_db)):
+def delete_resource(resource_id:str,admin=Depends(require_admin),db:Session=Depends(get_db)):
     item=db.get(Resource,resource_id)
     if item is None:raise HTTPException(status_code=404,detail='Resource not found.')
     if item.file_path:

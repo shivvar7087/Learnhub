@@ -19,17 +19,20 @@ export default function Profile(){
  const completionFields=[details.name,details.email,details.phone,details.university,details.branch,details.semester]
  const completion=Math.round(completionFields.filter(value=>String(value||'').trim()).length/completionFields.length*100)
  const set=(key,value)=>{setDetails(current=>({...current,[key]:value}));setSaved(false);setError('')}
- const save=()=>{
+ const save=async()=>{
   const digits=(details.phone||'').replace(/\D/g,'')
   if(details.name.trim().length<2)return setError('Enter your full name.')
   if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(details.email.trim()))return setError('Enter a valid email address.')
   if(digits&&digits.length!==10&&!(digits.length===12&&digits.startsWith('91')))return setError('Enter a valid 10-digit mobile number, with or without +91.')
   const updated={...details,name:details.name.trim(),email:details.email.trim().toLowerCase(),phone:details.phone.trim()}
-  writeUserData('learnhub-profile',user,updated)
-  updateProfile({name:updated.name,email:updated.email,phone:updated.phone})
-  setDetails(updated);setSaved(true);setError('')
-  setTimeout(()=>setSaved(false),2200)
+  try{
+   const account=await updateProfile({name:updated.name,email:updated.email,phone:updated.phone})
+   writeUserData('learnhub-profile',account,updated)
+   setDetails(updated);setSaved(true);setError('')
+   setTimeout(()=>setSaved(false),2200)
+  }catch(saveError){setError(saveError.message||'Could not save your profile. Please try again.')}
  }
+
  const signout=()=>{logout();navigate('/')}
  return <div className="profile-page">
   <div className="page-heading-row"><div><div className="section-kicker">YOUR LEARNING PROFILE</div><h1>My profile</h1><p>Manage your contact details, academic information, and learning progress.</p></div></div>

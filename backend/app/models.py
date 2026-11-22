@@ -40,3 +40,14 @@ class Resource(Base):
     file_path: Mapped[str] = mapped_column(Text, default="")
     uploaded: Mapped[bool] = mapped_column(Boolean, default=False)
 
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(512))
+    phone: Mapped[str] = mapped_column(String(40), default="")
+    role: Mapped[str] = mapped_column(String(20), default="student", index=True)
+

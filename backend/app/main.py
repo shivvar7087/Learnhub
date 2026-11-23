@@ -111,6 +111,11 @@ def resource_json(item:Resource):
     return ResourceOut.model_validate(item)
 
 
+@app.get('/')
+def api_root():
+    return {'service':'LearnHub API','docs':'/docs','health':'/api/health'}
+
+
 @app.get('/api/health')
 def health(db:Session=Depends(get_db)):
     db.execute(select(1))

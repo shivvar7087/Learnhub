@@ -8,7 +8,6 @@ dist/
 backend/.venv/
 backend/learnhub.db
 backend/uploads/
-.neon
 __pycache__/
 *.pyc
 

@@ -13,7 +13,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8001
 ```
 
 With no DATABASE_URL set, the API creates backend/learnhub.db (SQLite) and seeds the initial catalog on first start. Uploaded PDFs are saved under backend/uploads/ in local development. Set a private JWT_SECRET_KEY of at least 32 characters before starting the API; copy backend/.env.example to backend/.env or add the settings to the root .env.
@@ -25,7 +25,7 @@ npm install
 npm run dev
 ```
 
-Vite normally serves the site at `http://localhost:5173`; the frontend talks to the API at `http://127.0.0.1:8000`. Set `VITE_API_URL` in the frontend environment when the API uses another address. The admin dashboard shows whether it connected to the API. If the API is offline, the existing browser-local demo data remains available.
+Vite normally serves the site at `http://localhost:5173`; the frontend talks to the API at `http://127.0.0.1:8001`. Set `VITE_API_URL` in the frontend environment when the API uses another address. The admin dashboard shows whether it connected to the API. If the API is offline, the existing browser-local demo data remains available.
 
 ## PostgreSQL
 

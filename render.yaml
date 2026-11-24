@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: learnhub-api
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    disk:
+      name: learnhub-uploads
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_ORIGINS
+        value: https://shivvar7087.github.io,http://localhost:5173,http://127.0.0.1:5173
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"

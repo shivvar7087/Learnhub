@@ -29,7 +29,9 @@ if not upload_dir.is_absolute():upload_dir=ROOT/upload_dir
 upload_dir.mkdir(parents=True,exist_ok=True)
 
 app=FastAPI(title='LearnHub API',version='1.0.0')
-origins=[origin.strip() for origin in os.getenv('FRONTEND_ORIGINS','http://localhost:5173,http://127.0.0.1:5173').split(',') if origin.strip()]
+default_origins=['https://shivvar7087.github.io','http://localhost:5173','http://127.0.0.1:5173']
+configured_origins=[origin.strip() for origin in os.getenv('FRONTEND_ORIGINS','').split(',') if origin.strip()]
+origins=list(dict.fromkeys(default_origins+configured_origins))
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
 app.state.limiter=limiter
 app.add_exception_handler(RateLimitExceeded,_rate_limit_exceeded_handler)

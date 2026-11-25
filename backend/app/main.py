@@ -35,6 +35,14 @@ app.state.limiter=limiter
 app.add_exception_handler(RateLimitExceeded,_rate_limit_exceeded_handler)
 app.include_router(auth_router)
 
+FAVICON_SVG='''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="18" fill="#3269d8"/><path d="m10 26 22-12 22 12-22 12-22-12Z" fill="#fff"/><path d="M19 32v10c8 7 18 7 26 0V32l-13 7-13-7Z" fill="#dce8ff"/><path d="M53 27v13" stroke="#fff" stroke-linecap="round" stroke-width="3"/></svg>'''
+
+
+@app.get('/favicon.ico', include_in_schema=False)
+def favicon():
+    return Response(content=FAVICON_SVG,media_type='image/svg+xml',headers={'Cache-Control':'public, max-age=86400'})
+
+
 MAX_PDF_BYTES=20*1024*1024
 MAX_UPLOAD_REQUEST_BYTES=MAX_PDF_BYTES+1024*1024
 

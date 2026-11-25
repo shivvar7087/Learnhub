@@ -87,7 +87,7 @@ The configured persistent disk requires a paid Render web-service plan. SQLite a
 ### GitHub Pages frontend
 
 1. In GitHub repository **Settings → Pages**, select **GitHub Actions** as the deployment source.
-2. In **Settings → Secrets and variables → Actions → Variables**, add `VITE_API_URL` with your full Render API URL, for example `https://learnhub-api.onrender.com` (without a trailing slash).
+2. In **Settings → Secrets and variables → Actions → Variables**, add `VITE_API_URL` with your full Render API URL, for example `https://learnhub-lb6y.onrender.com` (without a trailing slash).
 3. Push to `main` or run **Deploy frontend to GitHub Pages** from the Actions tab.
 
 The workflow in `.github/workflows/deploy-pages.yml` installs and builds from `frontend/`, then deploys to `https://shivvar7087.github.io/Learnhub/`. The Vite configuration applies the repository subpath, and the workflow publishes a fallback page for client-side routes.

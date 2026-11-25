@@ -34,13 +34,13 @@ jobs:
 
       - name: Build frontend
         env:
+<<<<<<< HEAD
           VITE_API_URL: ${{ vars.VITE_API_URL || 'https://learnhub-lb6y.onrender.com' }}
+=======
+          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://learnhub-api.onrender.com' }}
+>>>>>>> c418001d4637ad87c136c90e9a0e0770ce065b15
         working-directory: frontend
         run: |
-          if [ -z "$VITE_API_URL" ]; then
-            echo "Set the VITE_API_URL repository variable to your Render API URL."
-            exit 1
-          fi
           npm run build
           cp dist/index.html dist/404.html
 

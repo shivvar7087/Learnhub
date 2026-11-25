@@ -34,11 +34,7 @@ jobs:
 
       - name: Build frontend
         env:
-<<<<<<< HEAD
           VITE_API_URL: ${{ vars.VITE_API_URL || 'https://learnhub-lb6y.onrender.com' }}
-=======
-          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://learnhub-api.onrender.com' }}
->>>>>>> c418001d4637ad87c136c90e9a0e0770ce065b15
         working-directory: frontend
         run: |
           npm run build
